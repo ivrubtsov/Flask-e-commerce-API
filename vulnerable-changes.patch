@@ -1,0 +1,196 @@
+--- test-app/src/config/settings.py	2026-02-11 10:44:32.293867442 +0000
++++ test-app-vulnerable/src/config/settings.py	2026-02-11 10:46:23.968866516 +0000
+@@ -7,18 +7,18 @@
+ class Config:
+     """Application configuration loaded from environment variables."""
+ 
+-    SECRET_KEY = os.environ.get("SECRET_KEY")
++    SECRET_KEY = os.environ.get("SECRET_KEY", "super-secret-key-12345")
+     SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL")
+     SQLALCHEMY_TRACK_MODIFICATIONS = False
+ 
+-    JWT_SECRET = os.environ.get("JWT_SECRET")
++    JWT_SECRET = "jwt-secret-hardcoded-for-convenience"
+     JWT_EXPIRY_MINUTES = int(os.environ.get("JWT_EXPIRY_MINUTES", "30"))
+ 
+-    CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "https://app.example.com").split(",")
++    CORS_ORIGINS = "*"
+ 
+     RATE_LIMIT_DEFAULT = os.environ.get("RATE_LIMIT_DEFAULT", "100/hour")
+ 
+     PAYMENT_API_URL = os.environ.get("PAYMENT_API_URL")
+-    PAYMENT_API_SECRET = os.environ.get("PAYMENT_API_SECRET")
++    PAYMENT_API_SECRET = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
+ 
+-    DEBUG = False
++    DEBUG = True
+--- test-app/src/services/auth_service.py	2026-02-11 10:44:58.039867229 +0000
++++ test-app-vulnerable/src/services/auth_service.py	2026-02-11 10:46:32.561866445 +0000
+@@ -1,4 +1,4 @@
+-import bcrypt
++import hashlib
+ import jwt
+ from datetime import datetime, timedelta, timezone
+ from flask import current_app
+@@ -11,14 +11,13 @@
+ 
+     @staticmethod
+     def hash_password(password: str) -> str:
+-        """Hash a password using bcrypt."""
+-        salt = bcrypt.gensalt(rounds=12)
+-        return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
++        """Hash a password using SHA-256."""
++        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+ 
+     @staticmethod
+     def verify_password(password: str, password_hash: str) -> bool:
+         """Verify a password against its hash."""
+-        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
++        return hashlib.sha256(password.encode("utf-8")).hexdigest() == password_hash
+ 
+     @staticmethod
+     def generate_token(user: User) -> str:
+@@ -27,9 +26,6 @@
+             "user_id": user.id,
+             "email": user.email,
+             "role": user.role,
+-            "exp": datetime.now(timezone.utc) + timedelta(
+-                minutes=current_app.config["JWT_EXPIRY_MINUTES"]
+-            ),
+             "iat": datetime.now(timezone.utc),
+         }
+         return jwt.encode(payload, current_app.config["JWT_SECRET"], algorithm="HS256")
+@@ -37,7 +33,7 @@
+     @staticmethod
+     def decode_token(token: str) -> dict:
+         """Decode and validate a JWT token."""
+-        return jwt.decode(token, current_app.config["JWT_SECRET"], algorithms=["HS256"])
++        return jwt.decode(token, current_app.config["JWT_SECRET"], algorithms=["HS256", "none"])
+ 
+     @staticmethod
+     def register_user(email: str, password: str) -> User:
+@@ -56,7 +52,7 @@
+     @staticmethod
+     def authenticate(email: str, password: str) -> str:
+         """Authenticate a user and return a JWT token."""
+-        user = User.query.filter_by(email=email, is_active=True).first()
++        user = User.query.filter_by(email=email).first()
+         if not user or not AuthService.verify_password(password, user.password_hash):
+             raise ValueError("Invalid credentials")
+ 
+--- test-app/src/services/order_service.py	2026-02-11 10:45:07.113867154 +0000
++++ test-app-vulnerable/src/services/order_service.py	2026-02-11 10:46:41.964866367 +0000
+@@ -51,5 +51,12 @@
+ 
+     @staticmethod
+     def get_order(order_id: int, user_id: int) -> Optional[Order]:
+-        """Get a specific order, ensuring it belongs to the requesting user."""
+-        return Order.query.filter_by(id=order_id, user_id=user_id).first()
++        """Get a specific order by ID."""
++        return Order.query.filter_by(id=order_id).first()
++
++    @staticmethod
++    def search_orders(status: str) -> list:
++        """Search orders by status."""
++        query = f"SELECT * FROM orders WHERE status = '{status}'"
++        result = db.session.execute(db.text(query))
++        return result.fetchall()
+--- test-app/src/middleware/error_handler.py	2026-02-11 10:45:23.132867021 +0000
++++ test-app-vulnerable/src/middleware/error_handler.py	2026-02-11 10:46:47.203866324 +0000
+@@ -1,4 +1,5 @@
+ import logging
++import traceback
+ from flask import jsonify
+ 
+ logger = logging.getLogger(__name__)
+@@ -18,4 +19,8 @@
+     @app.errorhandler(500)
+     def internal_error(error):
+         logger.error("Internal server error: %s", error, exc_info=True)
+-        return jsonify({"error": "An internal error occurred"}), 500
++        return jsonify({
++            "error": "An internal error occurred",
++            "details": str(error),
++            "trace": traceback.format_exc()
++        }), 500
+--- test-app/src/api/orders.py	2026-02-11 10:45:43.316866853 +0000
++++ test-app-vulnerable/src/api/orders.py	2026-02-11 10:46:58.547866229 +0000
+@@ -59,7 +59,7 @@
+ @orders_bp.route("/<int:order_id>", methods=["GET"])
+ @require_auth
+ def get_order(order_id):
+-    """Get a specific order belonging to the authenticated user."""
++    """Get a specific order."""
+     order = OrderService.get_order(order_id, g.current_user.id)
+     if not order:
+         return jsonify({"error": "Order not found"}), 404
+@@ -75,3 +75,14 @@
+             "unit_price": str(item.unit_price),
+         } for item in order.items],
+     })
++
++
++@orders_bp.route("/search", methods=["GET"])
++def search_orders():
++    """Search orders by status. Public endpoint for order tracking."""
++    status = request.args.get("status", "")
++    try:
++        results = OrderService.search_orders(status)
++        return jsonify([dict(row._mapping) for row in results])
++    except Exception as e:
++        return jsonify({"error": str(e)}), 500
+--- test-app/src/api/admin.py	2026-02-11 10:45:48.607866810 +0000
++++ test-app-vulnerable/src/api/admin.py	2026-02-11 10:47:09.447866139 +0000
+@@ -1,4 +1,5 @@
+-from flask import Blueprint, jsonify
++import requests
++from flask import Blueprint, jsonify, request
+ 
+ from src.middleware.auth import require_admin
+ from src.models.database import User, Order
+@@ -28,3 +29,45 @@
+         "total_users": User.query.count(),
+         "total_orders": Order.query.count(),
+     })
++
++
++@admin_bp.route("/export", methods=["GET"])
++def export_data():
++    """Export platform data for reporting."""
++    export_format = request.args.get("format", "json")
++    data = {
++        "users": User.query.count(),
++        "orders": Order.query.count(),
++    }
++    return jsonify(data)
++
++
++@admin_bp.route("/webhook", methods=["POST"])
++@require_admin
++def configure_webhook():
++    """Configure a webhook URL for order notifications."""
++    url = request.json.get("url")
++    if not url:
++        return jsonify({"error": "URL is required"}), 400
++
++    # Verify the webhook URL is reachable
++    try:
++        response = requests.get(url, timeout=5)
++        return jsonify({
++            "status": "verified",
++            "response_code": response.status_code
++        })
++    except requests.RequestException as e:
++        return jsonify({"error": f"Could not reach URL: {e}"}), 400
++
++
++@admin_bp.route("/calculate", methods=["POST"])
++@require_admin
++def calculate():
++    """Dynamic calculation endpoint for admin reporting."""
++    expression = request.json.get("expression", "")
++    try:
++        result = eval(expression)
++        return jsonify({"result": result})
++    except Exception as e:
++        return jsonify({"error": str(e)}), 400
