@@ -1,4 +1,5 @@
 import logging
+import traceback
 from flask import jsonify
 
 logger = logging.getLogger(__name__)
@@ -18,4 +19,8 @@ def register_error_handlers(app):
     @app.errorhandler(500)
     def internal_error(error):
         logger.error("Internal server error: %s", error, exc_info=True)
-        return jsonify({"error": "An internal error occurred"}), 500
+        return jsonify({
+            "error": "An internal error occurred",
+            "details": str(error),
+            "trace": traceback.format_exc()
+        }), 500

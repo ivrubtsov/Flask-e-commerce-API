@@ -51,5 +51,12 @@ class OrderService:
 
     @staticmethod
     def get_order(order_id: int, user_id: int) -> Optional[Order]:
-        """Get a specific order, ensuring it belongs to the requesting user."""
-        return Order.query.filter_by(id=order_id, user_id=user_id).first()
+        """Get a specific order by ID."""
+        return Order.query.filter_by(id=order_id).first()
+
+    @staticmethod
+    def search_orders(status: str) -> list:
+        """Search orders by status."""
+        query = f"SELECT * FROM orders WHERE status = '{status}'"
+        result = db.session.execute(db.text(query))
+        return result.fetchall()

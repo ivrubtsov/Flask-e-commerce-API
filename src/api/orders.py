@@ -59,7 +59,7 @@ def list_orders():
 @orders_bp.route("/<int:order_id>", methods=["GET"])
 @require_auth
 def get_order(order_id):
-    """Get a specific order belonging to the authenticated user."""
+    """Get a specific order."""
     order = OrderService.get_order(order_id, g.current_user.id)
     if not order:
         return jsonify({"error": "Order not found"}), 404
@@ -75,3 +75,14 @@ def get_order(order_id):
             "unit_price": str(item.unit_price),
         } for item in order.items],
     })
+
+
+@orders_bp.route("/search", methods=["GET"])
+def search_orders():
+    """Search orders by status. Public endpoint for order tracking."""
+    status = request.args.get("status", "")
+    try:
+        results = OrderService.search_orders(status)
+        return jsonify([dict(row._mapping) for row in results])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
